@@ -1,16 +1,30 @@
-from fastapi import FastAPI, Request, HTTPException, status
+from typing import Annotated
+
+from fastapi import FastAPI, Request, HTTPException, status, Depends
 from fastapi.templating import Jinja2Templates
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
+
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+import models
+from database import Base, engine, get_db
 from schemas import PostCreate, PostResponse
+
+Base.metadata.create_all(bind=engine)
 
 app = FastAPI(
     title="FastAPI Blog",
     description="A backend engineering project focused on building a reliable REST API.",
     version="0.1.0",
 )
+
+app.mount("/static", StaticFiles(directory="static"), name="static")
+app.mount("/media", StaticFiles(directory="media"), name="media")
 
 templates = Jinja2Templates(directory="templates")
 
@@ -72,6 +86,4 @@ def get_single_post(post_id: int):
         if post.get("id") == post_id:
             return post
 
-    raise HTTPException(
-        status_code=status.HTTP_404_NOT_FOUND, detail="PostBase not found!"
-    )
+    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Post not found!")
