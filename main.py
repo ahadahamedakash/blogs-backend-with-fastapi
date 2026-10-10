@@ -1,13 +1,20 @@
+from contextlib import asynccontextmanager
 from typing import Annotated
 
 from fastapi import FastAPI, Request, HTTPException, status, Depends, Query
 from fastapi.templating import Jinja2Templates
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import HTMLResponse, JSONResponse
+
+from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
+from fastapi.exception_handlers import (
+    http_exception_handler,
+    request_validation_exception_handler,
+)
 
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import selectinload
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
@@ -22,15 +29,27 @@ from schemas import (
     UserResponse,
 )
 
-Base.metadata.create_all(bind=engine)
+
+# Base.metadata.create_all(bind=engine)
+@asynccontextmanager
+async def lifespan(__app: FastAPI):
+    # startup
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    yield
+    # shutdown
+    await engine.dispose()
+
 
 app = FastAPI(
+    lifespan=lifespan,
+    # //
     title="FastAPI Blog",
     description="A backend engineering project focused on building a reliable REST API.",
     version="0.1.0",
 )
 
-DBSession = Annotated[Session, Depends(get_db)]
+DBSession = Annotated[AsyncSession, Depends(get_db)]
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
 app.mount("/media", StaticFiles(directory="media"), name="media")
@@ -53,8 +72,10 @@ def home(request: Request):
 
 
 @app.get("/api/posts", response_model=list[PostResponse])
-def get_post(db: DBSession):
-    result = db.execute(select(models.Post))
+async def get_post(db: DBSession):
+    result = await db.execute(
+        select(models.Post).options(selectinload(models.Post.author))
+    )
 
     posts = result.scalars().all()
 
@@ -64,8 +85,8 @@ def get_post(db: DBSession):
 @app.post(
     "/api/posts", response_model=PostResponse, status_code=status.HTTP_201_CREATED
 )
-def create_post(post: PostCreate, db: DBSession):
-    result = db.execute(select(models.User).where(models.User.id == post.user_id))
+async def create_post(post: PostCreate, db: DBSession):
+    result = await db.execute(select(models.User).where(models.User.id == post.user_id))
 
     user = result.scalars().first()
 
@@ -82,15 +103,19 @@ def create_post(post: PostCreate, db: DBSession):
     )
 
     db.add(new_post)
-    db.commit()
-    db.refresh(new_post)
+    await db.commit()
+    await db.refresh(new_post, attribute_names=["authro"])
 
     return new_post
 
 
 @app.get("/api/posts/{post_id}", response_model=PostResponse)
-def get_single_post(post_id: int, db: DBSession):
-    result = db.execute(select(models.Post).where(models.Post.id == post_id))
+async def get_single_post(post_id: int, db: DBSession):
+    result = await db.execute(
+        select(models.Post)
+        .options(selectinload(models.Post.author))
+        .where(models.Post.id == post_id)
+    )
 
     post = result.scalars().first()
 
@@ -101,8 +126,8 @@ def get_single_post(post_id: int, db: DBSession):
 
 
 @app.put("/api/posts/{post_id}", response_model=PostResponse)
-def update_entire_post(post_id: int, post_data: PostCreate, db: DBSession):
-    result = db.execute(select(models.Post).where(models.Post.id == post_id))
+async def update_entire_post(post_id: int, post_data: PostCreate, db: DBSession):
+    result = await db.execute(select(models.Post).where(models.Post.id == post_id))
 
     post = result.scalars().first()
 
@@ -112,7 +137,7 @@ def update_entire_post(post_id: int, post_data: PostCreate, db: DBSession):
         )
 
     if post_data.user_id != post.user_id:
-        result = db.execute(
+        result = await db.execute(
             select(models.User).where(models.User.id == post_data.user_id)
         )
 
@@ -127,14 +152,14 @@ def update_entire_post(post_id: int, post_data: PostCreate, db: DBSession):
     post.content = post_data.content
     post.user_id = post_data.user_id
 
-    db.commit()
-    db.refresh()
+    await db.commit()
+    await db.refresh(post, attribute_names=["authro"])
 
     return post
 
 
 @app.patch("/api/posts/{post_id}", response_model=PostResponse)
-def update_partial(post_id: int, post_data: PostUpdate, db: DBSession):
+async def update_partial(post_id: int, post_data: PostUpdate, db: DBSession):
     result = db.execute(select(models.Post).where(models.Post.id == post_id))
 
     post = result.scalars().first()
@@ -149,14 +174,14 @@ def update_partial(post_id: int, post_data: PostUpdate, db: DBSession):
     for field, value in update_data.items():
         setattr(post, field, value)
 
-    db.commit()
-    db.refresh()
+    await db.commit()
+    await db.refresh(post, attribute_names=["authro"])
 
     return post
 
 
 @app.delete("/api/posts/{post_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_post(post_id: int, db: DBSession):
+async def delete_post(post_id: int, db: DBSession):
     result = db.execute(select(models.Post).where(models.Post.id == post_id))
 
     post = result.scalars().first()
@@ -166,13 +191,13 @@ def delete_post(post_id: int, db: DBSession):
             status_code=status.HTTP_404_NOT_FOUND, detail="Post not found!"
         )
 
-    db.delete(post)
-    db.commit()
+    await db.delete(post)
+    await db.commit()
 
 
 @app.post("/api/register", response_model=UserResponse)
-def register(user: UserCreate, db: DBSession):
-    result = db.execute(
+async def register(user: UserCreate, db: DBSession):
+    result = await db.execute(
         select(models.User).where(models.User.username == user.username)
     )
 
@@ -183,7 +208,9 @@ def register(user: UserCreate, db: DBSession):
             status_code=status.HTTP_400_BAD_REQUEST, detail="Username already exist!"
         )
 
-    result = db.execute(select(models.User).where(models.User.email == user.email))
+    result = await db.execute(
+        select(models.User).where(models.User.email == user.email)
+    )
 
     existing_email = result.scalars().first()
 
@@ -195,15 +222,15 @@ def register(user: UserCreate, db: DBSession):
     new_user = models.User(username=user.username, email=user.email)
 
     db.add(new_user)
-    db.commit()
-    db.refresh(new_user)
+    await db.commit()
+    await db.refresh(new_user)
 
     return new_user
 
 
 @app.get("/api/users/{user_id}", response_model=UserResponse)
-def get_users_data(user_id: int, db: DBSession):
-    result = db.execute(select(models.User).where(models.User.id == user_id))
+async def get_users_data(user_id: int, db: DBSession):
+    result = await db.execute(select(models.User).where(models.User.id == user_id))
 
     user = result.scalars().first()
 
@@ -214,8 +241,8 @@ def get_users_data(user_id: int, db: DBSession):
 
 
 @app.get("/api/users/{user_id}/posts", response_model=list[PostResponse])
-def get_user_posts(user_id: int, db: DBSession):
-    result = db.execute(select(models.User).where(models.User.id == user_id))
+async def get_user_posts(user_id: int, db: DBSession):
+    result = await db.execute(select(models.User).where(models.User.id == user_id))
 
     user = result.scalars().first()
 
@@ -224,7 +251,11 @@ def get_user_posts(user_id: int, db: DBSession):
             status_code=status.HTTP_404_NOT_FOUND, detail="User not found!"
         )
 
-    result = db.execute(select(models.Post).where(models.Post.user_id == user_id))
+    result = await db.execute(
+        select(models.Post)
+        .options(selectinload(models.Post.author))
+        .where(models.Post.user_id == user_id)
+    )
 
     posts = result.scalars().all()
 
@@ -232,8 +263,8 @@ def get_user_posts(user_id: int, db: DBSession):
 
 
 @app.patch("/api/users/{user_id}", response_model=UserResponse)
-def update_user(user_id: int, data: UserUpdate, db: DBSession):
-    result = db.execute(select(models.User).where(models.User.id == user_id))
+async def update_user(user_id: int, data: UserUpdate, db: DBSession):
+    result = await db.execute(select(models.User).where(models.User.id == user_id))
 
     user = result.scalars().first()
 
@@ -243,7 +274,7 @@ def update_user(user_id: int, data: UserUpdate, db: DBSession):
         )
 
     if data.username is not None and data.username != user.username:
-        result = db.execute(
+        result = await db.execute(
             select(models.User).where(models.User.username == data.username)
         )
         existing_user = result.scalars().first()
@@ -267,15 +298,15 @@ def update_user(user_id: int, data: UserUpdate, db: DBSession):
         if data.image_file is not None:
             user.image_file = data.image_file
 
-        db.commit()
-        db.refresh(user)
+        await db.commit()
+        await db.refresh(user)
 
         return user
 
 
 @app.delete("/api/users/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_user(user_id: int, db: DBSession):
-    result = db.execute(select(models.User).where(models.User.id == user_id))
+async def delete_user(user_id: int, db: DBSession):
+    result = await db.execute(select(models.User).where(models.User.id == user_id))
 
     user = result.scalars().first()
 
@@ -284,5 +315,5 @@ def delete_user(user_id: int, db: DBSession):
             status_code=status.HTTP_404_NOT_FOUND, detail="User not found!"
         )
 
-    db.delete(user)
-    db.commit()
+    await db.delete(user)
+    await db.commit()
