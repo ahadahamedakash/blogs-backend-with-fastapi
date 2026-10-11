@@ -1,29 +1,49 @@
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Query
 
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import models
+from config import settings
 from database import get_db, DBSession
-from schemas import PostCreate, PostUpdate, PostResponse
+from schemas import PostCreate, PostUpdate, PostResponse, PaginatedPostsResponse
 
 from auth import CurrentUser
 
 router = APIRouter()
 
 
-@router.get("", response_model=list[PostResponse])
-async def get_post(db: DBSession):
+@router.get("", response_model=PaginatedPostsResponse)
+async def get_post(
+    db: DBSession,
+    skip: Annotated[int, Query(ge=0)] = 0,
+    limit: Annotated[int, Query(gt=1, le=100)] = settings.post_per_page,
+):
+    count_result = await db.execute(select(func.count()).select_from(models.Post))
+    total = count_result.scalars() or 0
+
     result = await db.execute(
-        select(models.Post).options(selectinload(models.Post.author))
+        select(models.Post)
+        .options(selectinload(models.Post.author))
+        .order_by(models.Post.date_posted.desc())
+        .offset(skip)
+        .limit(limit)
     )
 
     posts = result.scalars().all()
 
-    return posts
+    has_more = skip + len(posts) < total
+
+    return PaginatedPostsResponse(
+        posts=[PostResponse.model_validate(post) for post in posts],
+        total=total,
+        skip=skip,
+        limit=limit,
+        has_more=has_more,
+    )
 
 
 @router.post("", response_model=PostResponse, status_code=status.HTTP_201_CREATED)

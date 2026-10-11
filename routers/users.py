@@ -1,7 +1,7 @@
 from typing import Annotated
 from datetime import timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, status, UploadFile
+from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, Query
 from fastapi.security import OAuth2PasswordRequestForm
 
 from sqlalchemy import select, func
@@ -23,6 +23,7 @@ from schemas import (
     Token,
     UserPrivate,
     UserPublic,
+    PaginatedPostsResponse,
 )
 from auth import (
     create_access_token,
@@ -118,7 +119,12 @@ async def get_users_data(user_id: int, db: DBSession):
 
 
 @router.get("/{user_id}/posts", response_model=list[PostResponse])
-async def get_user_posts(user_id: int, db: DBSession):
+async def get_user_posts(
+    user_id: int,
+    db: DBSession,
+    skip: Annotated[int, Query(gt=0)] = 0,
+    limit: Annotated[int, Query(gt=0, le=100)] = settings.post_per_page,
+):
     result = await db.execute(select(models.User).where(models.User.id == user_id))
 
     user = result.scalars().first()
@@ -128,15 +134,34 @@ async def get_user_posts(user_id: int, db: DBSession):
             status_code=status.HTTP_404_NOT_FOUND, detail="User not found!"
         )
 
+    count_result = await db.execute(
+        select(func.count(models.Post))
+        .select_from(models.Post)
+        .where(models.Post.user_id == user_id)
+    )
+
+    total = count_result.scalar() or 0
+
     result = await db.execute(
         select(models.Post)
         .options(selectinload(models.Post.author))
         .where(models.Post.user_id == user_id)
+        .order_by(models.Post.date_posted.desc())
+        .offset(skip)
+        .limit(limit)
     )
 
     posts = result.scalars().all()
 
-    return posts
+    has_more = skip + len(posts) < total
+
+    return PaginatedPostsResponse(
+        posts=[PostResponse.model_validate(post) for post in posts],
+        total=total,
+        skip=skip,
+        limit=limit,
+        has_more=has_more,
+    )
 
 
 @router.patch("/{user_id}", response_model=UserPrivate)
