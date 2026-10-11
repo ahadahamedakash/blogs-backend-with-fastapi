@@ -5,13 +5,16 @@ from fastapi import Depends
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
 
+from config import settings
+
 # from sqlalchemy import create_engine
 # from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
-DATABASE_URL = "sqlite+aiosqlite:///./blog.db"
+# DATABASE_URL = "sqlite+aiosqlite:///./blog.db"
 
 
-engine = create_async_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+# engine = create_async_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+engine = create_async_engine(settings.database_url)
 
 
 AsyncSessionLocal = async_sessionmaker(
