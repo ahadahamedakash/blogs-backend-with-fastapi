@@ -12,7 +12,7 @@ from fastapi.exception_handlers import (
     request_validation_exception_handler,
 )
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -20,6 +20,8 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from database import Base, engine, get_db
 from routers import posts, users
+
+from database import DBSession
 
 
 # Base.metadata.create_all(bind=engine)
@@ -61,6 +63,38 @@ app.include_router(posts.router, prefix="/api/posts", tags=["posts"])
     @app.get("/", response_class=HTMLResponse) -> will show html respnse
     @app.get("/", include_in_schema=False) -> won't show on the documentation
 """
+
+
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    response = await call_next(request)
+
+    response.headers["X-Frame-Options"] = "SAMEORIGIN"
+
+    response.headers["X-Content-Type-Options"] = "nosniff"
+
+    if "referrer-Policy" not in response.headers:
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+
+    if request.url.hostname not in ("localhost", "127.0.0.1"):
+        response.headers["Strict-Transport-Security"] = (
+            "max-age=63072000; includeSubDomains"
+        )
+
+    return response
+
+
+@app.get("/health")
+async def health_check(db: DBSession):
+    try:
+        await db.execute(text("SELECT 1"))
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Database unavailabe",
+        ) from exc
+
+    return {"status": "healthy"}
 
 
 @app.get("/", response_class=HTMLResponse, include_in_schema=False)
