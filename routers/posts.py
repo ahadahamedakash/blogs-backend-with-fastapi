@@ -23,7 +23,7 @@ async def get_post(
     limit: Annotated[int, Query(gt=1, le=100)] = settings.post_per_page,
 ):
     count_result = await db.execute(select(func.count()).select_from(models.Post))
-    total = count_result.scalars() or 0
+    total = count_result.scalar_one()
 
     result = await db.execute(
         select(models.Post)
@@ -111,7 +111,7 @@ async def update_entire_post(
 async def update_partial(
     post_id: int, post_data: PostUpdate, current_user: CurrentUser, db: DBSession
 ):
-    result = db.execute(select(models.Post).where(models.Post.id == post_id))
+    result = await db.execute(select(models.Post).where(models.Post.id == post_id))
 
     post = result.scalars().first()
 
@@ -139,7 +139,7 @@ async def update_partial(
 
 @router.delete("/{post_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_post(post_id: int, current_user: CurrentUser, db: DBSession):
-    result = db.execute(select(models.Post).where(models.Post.id == post_id))
+    result = await db.execute(select(models.Post).where(models.Post.id == post_id))
 
     post = result.scalars().first()
 
